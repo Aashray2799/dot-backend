@@ -46,7 +46,7 @@ cron.schedule('*/2 * * * *', async () => {
         console.log('🔄 Running dynamic pricing update...');
         
         const inventoryResult = await pool.query(`
-            SELECT ri.*, m.total_rooms, m.name as motel_name
+            SELECT ri.*, m.total_rooms, m.namw as motel_name
             FROM room_inventory ri
             JOIN motels m ON ri.motel_id = m.id
             WHERE ri.status = 'active'
@@ -109,7 +109,7 @@ app.get('/api/rooms', async (req, res) => {
         const query = `
             SELECT 
                 ri.*,
-                m.name as motel_name,
+                m.namw as motel_name,
                 m.address as motel_address,
                 m.total_rooms,
                 COUNT(rb.id) as active_bookings
