@@ -40,7 +40,7 @@ const calculateDynamicPrice = (basePrice, roomsAvailable, totalRooms, viewCount)
     return Math.round(dynamicPrice * 100) / 100;
 };
 
-// Comment out this entire cron job
+// Update prices every 2 minutes - DISABLED
 // cron.schedule('*/2 * * * *', async () => {
 //     try {
 //         console.log('🔄 Running dynamic pricing update...');
@@ -85,8 +85,7 @@ const calculateDynamicPrice = (basePrice, roomsAvailable, totalRooms, viewCount)
 //     }
 // });
 
-// Clean up expired bookings every minute
-// Comment out this cron job too
+// Clean up expired bookings every minute - DISABLED
 // cron.schedule('* * * * *', async () => {
 //     try {
 //         const result = await pool.query(
@@ -116,9 +115,9 @@ app.get('/api/rooms', async (req, res) => {
                 COUNT(rb.id) as active_bookings
             FROM room_inventory ri
             JOIN motels m ON ri.motel_id = m.id
-            LEFT JOIN room_bookings rb ON ri.id = rb.room_inventory_id AND rb.status = 'active'
+            LEFT JOIN room_bookings rb ON ri.id = rb.room_inventory_id::integer AND rb.status = 'active'
             WHERE ri.status = 'active' AND ri.pricing_period = $1
-            GROUP BY ri.id, m.name, m.address, m.total_rooms
+            GROUP BY ri.id, m.namw, m.address, m.total_rooms
             ORDER BY ri.current_price ASC
         `;
         
@@ -202,7 +201,7 @@ app.get('/api/bookings/:email', async (req, res) => {
                 rb.*,
                 ri.room_type,
                 ri.pricing_period,
-                m.name as motel_name,
+                m.namw as motel_name,
                 m.address as motel_address,
                 EXTRACT(EPOCH FROM (rb.expires_at - NOW())) as seconds_remaining
             FROM room_bookings rb
