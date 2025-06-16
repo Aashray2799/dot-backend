@@ -100,34 +100,12 @@ const calculateDynamicPrice = (basePrice, roomsAvailable, totalRooms, viewCount)
 //     }
 // });
 
-// Get all available rooms with current pricing - SIMPLIFIED TO RETURN ALL ACTIVE ROOMS
+// ULTRA-SIMPLE TEST - Just return room_inventory data
 app.get('/api/rooms', async (req, res) => {
     try {
-        const query = `
-            SELECT 
-                ri.*,
-                m.namw as motel_name,
-                m.address as motel_address,
-                m.total_rooms,
-                COUNT(rb.id) as active_bookings
-            FROM room_inventory ri
-            JOIN motels m ON ri.motel_id = m.id
-            LEFT JOIN room_bookings rb ON ri.id = rb.room_inventory_id::integer AND rb.status = 'active'
-            WHERE ri.status = 'active'
-            GROUP BY ri.id, m.namw, m.address, m.total_rooms
-            ORDER BY ri.current_price ASC
-        `;
+        const query = `SELECT * FROM room_inventory WHERE status = 'active'`;
         
         const result = await pool.query(query);
-        
-        // Increment view count for demand tracking
-        const roomIds = result.rows.map(room => room.id);
-        if (roomIds.length > 0) {
-            await pool.query(
-                'UPDATE room_inventory SET view_count = view_count + 1 WHERE id = ANY($1)',
-                [roomIds]
-            );
-        }
         
         res.json(result.rows);
     } catch (err) {
