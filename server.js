@@ -90,7 +90,7 @@ const calculateDynamicPrice = (basePrice, roomsAvailable, totalRooms, viewCount)
 // cron.schedule('* * * * *', async () => {
 //     try {
 //         const result = await pool.query(
-//             'UPDATE room_bookings SET status = $1 WHERE expires_at < NOW() AND status = $2',
+//             'UPDATE room_bookings SET status = $1 WHERE expires_at::timestamp < NOW() AND status = $2',
 //             ['expired', 'active']
 //         );
 //         if (result.rowCount > 0) {
