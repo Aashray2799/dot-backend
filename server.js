@@ -40,65 +40,66 @@ const calculateDynamicPrice = (basePrice, roomsAvailable, totalRooms, viewCount)
     return Math.round(dynamicPrice * 100) / 100;
 };
 
-// Update prices every 2 minutes
-cron.schedule('*/2 * * * *', async () => {
-    try {
-        console.log('🔄 Running dynamic pricing update...');
-        
-        const inventoryResult = await pool.query(`
-            SELECT ri.*, m.total_rooms, m.namw as motel_name
-            FROM room_inventory ri
-            JOIN motels m ON ri.motel_id = m.id
-            WHERE ri.status = 'active'
-        `);
-        
-        for (const room of inventoryResult.rows) {
-            const currentHour = new Date().getHours();
-            const isCurrentPeriod = 
-                (room.pricing_period === 'morning' && currentHour >= 6 && currentHour < 18) ||
-                (room.pricing_period === 'night' && (currentHour >= 18 || currentHour < 6));
-            
-            if (isCurrentPeriod) {
-                const basePrice = room.pricing_period === 'morning' 
-                    ? parseFloat(room.base_price_morning)
-                    : parseFloat(room.base_price_night);
-                
-                const newPrice = calculateDynamicPrice(
-                    basePrice,
-                    room.rooms_available,
-                    room.total_rooms,
-                    room.view_count
-                );
-                
-                if (Math.abs(newPrice - parseFloat(room.current_price)) > 1) {
-                    await pool.query(
-                        'UPDATE room_inventory SET current_price = $1, last_price_update = NOW() WHERE id = $2',
-                        [newPrice, room.id]
-                    );
-                    
-                    console.log(`💰 ${room.motel_name} ${room.room_type}: $${room.current_price} → $${newPrice}`);
-                }
-            }
-        }
-    } catch (err) {
-        console.error('Error updating dynamic prices:', err);
-    }
-});
+// Comment out this entire cron job
+// cron.schedule('*/2 * * * *', async () => {
+//     try {
+//         console.log('🔄 Running dynamic pricing update...');
+//         
+//         const inventoryResult = await pool.query(`
+//             SELECT ri.*, m.total_rooms, m.namw as motel_name
+//             FROM room_inventory ri
+//             JOIN motels m ON ri.motel_id = m.id
+//             WHERE ri.status = 'active'
+//         `);
+//         
+//         for (const room of inventoryResult.rows) {
+//             const currentHour = new Date().getHours();
+//             const isCurrentPeriod = 
+//                 (room.pricing_period === 'morning' && currentHour >= 6 && currentHour < 18) ||
+//                 (room.pricing_period === 'night' && (currentHour >= 18 || currentHour < 6));
+//             
+//             if (isCurrentPeriod) {
+//                 const basePrice = room.pricing_period === 'morning' 
+//                     ? parseFloat(room.base_price_morning)
+//                     : parseFloat(room.base_price_night);
+//                 
+//                 const newPrice = calculateDynamicPrice(
+//                     basePrice,
+//                     room.rooms_available,
+//                     room.total_rooms,
+//                     room.view_count
+//                 );
+//                 
+//                 if (Math.abs(newPrice - parseFloat(room.current_price)) > 1) {
+//                     await pool.query(
+//                         'UPDATE room_inventory SET current_price = $1, last_price_update = NOW() WHERE id = $2',
+//                         [newPrice, room.id]
+//                     );
+//                     
+//                     console.log(`💰 ${room.motel_name} ${room.room_type}: $${room.current_price} → $${newPrice}`);
+//                 }
+//             }
+//         }
+//     } catch (err) {
+//         console.error('Error updating dynamic prices:', err);
+//     }
+// });
 
 // Clean up expired bookings every minute
-cron.schedule('* * * * *', async () => {
-    try {
-        const result = await pool.query(
-            'UPDATE room_bookings SET status = $1 WHERE expires_at < NOW() AND status = $2',
-            ['expired', 'active']
-        );
-        if (result.rowCount > 0) {
-            console.log(`⏰ Expired ${result.rowCount} bookings`);
-        }
-    } catch (err) {
-        console.error('Error cleaning up expired bookings:', err);
-    }
-});
+// Comment out this cron job too
+// cron.schedule('* * * * *', async () => {
+//     try {
+//         const result = await pool.query(
+//             'UPDATE room_bookings SET status = $1 WHERE expires_at < NOW() AND status = $2',
+//             ['expired', 'active']
+//         );
+//         if (result.rowCount > 0) {
+//             console.log(`⏰ Expired ${result.rowCount} bookings`);
+//         }
+//     } catch (err) {
+//         console.error('Error cleaning up expired bookings:', err);
+//     }
+// });
 
 // Get all available rooms with current pricing
 app.get('/api/rooms', async (req, res) => {
