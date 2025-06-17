@@ -1,416 +1,412 @@
-const express = require('express');
-const cors = require('cors');
-const cron = require('node-cron');
-require('dotenv').config();
+import random
+import math
+from datetime import datetime, time
+from typing import Dict, Tuple
+import json
 
-const pool = require('./database/connection');
-
-const app = express();
-const PORT = process.env.PORT || 3000;
-
-// EXTREME FOMO PRICING CONFIGURATION
-const PRICING_CONFIG = {
-  MINIMUM_PRICE: 75,    // Never go below $75
-  MAXIMUM_PRICE: 130,   // Max surge price $130
-  TOTAL_ROOMS: 15,      // Signal Hill Motel total rooms
-  UPDATE_INTERVAL: 1,   // Update prices every 1 MINUTE for EXTREME FOMO
-};
-
-// Middleware
-app.use(cors());
-app.use(express.json());
-
-// 1. DAY-OF-WEEK FOMO MULTIPLIERS
-const getDayOfWeekMultiplier = () => {
-  const today = new Date();
-  const dayOfWeek = today.getDay(); // 0=Sunday, 6=Saturday
-  const hour = today.getHours();
-  
-  const dayMultipliers = {
-    0: 0.85, // Sunday - Fill rooms
-    1: 0.90, // Monday - Fill rooms  
-    2: 0.95, // Tuesday - Slight discount
-    3: 1.05, // Wednesday - Building demand
-    4: 1.15, // Thursday - Pre-weekend premium
-    5: 1.35, // Friday - Peak demand
-    6: 1.40  // Saturday - Peak demand
-  };
-  
-  let multiplier = dayMultipliers[dayOfWeek];
-  
-  // Same-day booking FOMO
-  if (dayOfWeek >= 5 && hour >= 16) multiplier *= 1.15; // Weekend same-day +15%
-  if (dayOfWeek <= 2 && hour >= 18) multiplier *= 0.95; // Slow day evening -5%
-  
-  return multiplier;
-};
-
-// 2. OCCUPANCY-BASED FOMO PRICING
-const getOccupancyMultiplier = (roomsAvailable, dayOfWeek) => {
-  const occupancyRate = (PRICING_CONFIG.TOTAL_ROOMS - roomsAvailable) / PRICING_CONFIG.TOTAL_ROOMS;
-  
-  if (dayOfWeek >= 5) { // Weekend - maximize revenue with FOMO
-    if (occupancyRate >= 0.90) return 1.50; // 90%+ = +50% FOMO SURGE
-    if (occupancyRate >= 0.80) return 1.30; // 80%+ = +30% 
-    if (occupancyRate >= 0.70) return 1.20; // 70%+ = +20%
-    if (occupancyRate >= 0.50) return 1.10; // 50%+ = +10%
-    return 1.0;
-  } else if (dayOfWeek <= 2) { // Slow days - fill rooms
-    if (occupancyRate >= 0.70) return 1.15; // Actually filling = +15%
-    if (occupancyRate >= 0.50) return 1.05; // Normal = +5%
-    if (occupancyRate >= 0.30) return 0.95; // Low = -5%
-    return 0.85; // Very low = -15% to attract customers
-  } else { // Mid-week - balanced
-    if (occupancyRate >= 0.80) return 1.25;
-    if (occupancyRate >= 0.60) return 1.15;
-    if (occupancyRate >= 0.40) return 1.10;
-    return 0.98;
-  }
-};
-
-// 3. GUARANTEED PRICE CHANGES - SUPER AGGRESSIVE VOLATILITY
-const getVolatilityMultiplier = () => {
-  const volatility = Math.random();
-  const timestamp = Date.now();
-  
-  // Use timestamp to ensure different results each minute
-  const timeBasedVariation = (timestamp % 1000) / 1000; // 0-1 based on milliseconds
-  
-  // 40% chance of BIG surge (instead of 15%)
-  if (volatility > 0.60) return 1.25 + (timeBasedVariation * 0.15); // +25% to +40%
-  
-  // 40% chance of BIG drop (instead of 15%)  
-  if (volatility < 0.40) return 0.70 - (timeBasedVariation * 0.10); // -30% to -40%
-  
-  // 20% chance of medium fluctuation - but still guaranteed change
-  return 1.0 + ((volatility - 0.5) * 0.50) + (timeBasedVariation * 0.20); // Always ±25%+
-};
-
-// 4. TIME-TO-CHECKIN URGENCY PRICING  
-const getUrgencyMultiplier = () => {
-  const now = new Date();
-  const hour = now.getHours();
-  const minute = now.getMinutes();
-  
-  // Add minute-based micro-variations for constant change
-  const minuteVariation = 1.0 + (minute / 100); // 1.00 to 1.59
-  
-  // Late night booking urgency
-  if (hour >= 22 || hour <= 6) return 1.20 * minuteVariation; // +20% + minute variation
-  
-  // Peak booking hours
-  if (hour >= 18 && hour <= 21) return 1.10 * minuteVariation; // +10% + minute variation
-  
-  // Early morning discount
-  if (hour >= 6 && hour <= 10) return 0.95 * minuteVariation; // -5% + minute variation
-  
-  return 1.0 * minuteVariation; // Always has minute-based variation
-};
-
-// 5. COMPETITIVE FOMO PRICING (vs Booking.com)
-const getCompetitiveMultiplier = (basePrice, roomsAvailable) => {
-  const bookingComPrice = 98; // Their price with taxes
-  const ourEquivalent = basePrice * 1.12; // Add estimated taxes
-  
-  // Add random competitive pressure
-  const competitivePressure = Math.random() * 0.20; // 0-20% variation
-  
-  // If we're much cheaper, CREATE FOMO by raising prices
-  if (ourEquivalent < bookingComPrice * 0.80) return 1.15 + competitivePressure; // +15% + random
-  
-  // If low inventory, FOMO pricing regardless of competition
-  if (roomsAvailable <= 5) return 1.10 + competitivePressure; // +10% + random
-  
-  // If we're more expensive, create DEAL FOMO
-  if (ourEquivalent > bookingComPrice * 1.05) return 0.90 + competitivePressure; // -10% + random
-  
-  return 1.0 + competitivePressure; // Always has random variation
-};
-
-// 6. MAIN FOMO PRICING ALGORITHM
-const calculateFOMOPrice = (room) => {
-  const {
-    base_price_morning,
-    base_price_night,
-    pricing_period,
-    rooms_available,
-    view_count = 0
-  } = room;
-  
-  const basePrice = pricing_period === 'morning' 
-    ? parseFloat(base_price_morning) 
-    : parseFloat(base_price_night);
-  
-  const dayOfWeek = new Date().getDay();
-  
-  // Apply all FOMO multipliers - ALL have randomness built in now
-  const dayMultiplier = getDayOfWeekMultiplier();
-  const occupancyMultiplier = getOccupancyMultiplier(rooms_available, dayOfWeek);
-  const volatilityMultiplier = getVolatilityMultiplier(); // GUARANTEED variation
-  const urgencyMultiplier = getUrgencyMultiplier(); // Minute-based variation
-  const competitiveMultiplier = getCompetitiveMultiplier(basePrice, rooms_available); // Random variation
-  
-  // Calculate FOMO price
-  let fomoPrice = basePrice * 
-    dayMultiplier * 
-    occupancyMultiplier * 
-    volatilityMultiplier * 
-    urgencyMultiplier * 
-    competitiveMultiplier;
-  
-  // Apply hard limits
-  fomoPrice = Math.max(PRICING_CONFIG.MINIMUM_PRICE, 
-                       Math.min(PRICING_CONFIG.MAXIMUM_PRICE, fomoPrice));
-  
-  return Math.round(fomoPrice);
-};
-
-// 7. EXTREME FOMO PRICING ENGINE - RUNS EVERY 1 MINUTE!
-cron.schedule('*/1 * * * *', async () => {
-  try {
-    console.log('🔥 GUARANTEED PRICE CHANGES - Every 1 MINUTE!');
+class MotelPricingEngine:
+    """
+    Dynamic pricing engine for motels with FOMO psychology and demand-based adjustments.
+    Designed to maximize revenue while avoiding commission-heavy platforms.
+    """
     
-    const roomsResult = await pool.query('SELECT * FROM room_inventory WHERE status = $1', ['active']);
-    const rooms = roomsResult.rows;
-    
-    for (const room of rooms) {
-      const currentPrice = parseFloat(room.current_price);
-      const newFOMOPrice = calculateFOMOPrice(room);
-      
-      // FORCE UPDATE - Always update price (remove the $1 minimum difference)
-      await pool.query(
-        'UPDATE room_inventory SET current_price = $1, last_price_update = NOW() WHERE id = $2',
-        [newFOMOPrice, room.id]
-      );
-      
-      const change = newFOMOPrice > currentPrice ? '📈 SURGE' : '📉 DROP';
-      const amount = Math.abs(newFOMOPrice - currentPrice);
-      
-      if (amount >= 1) {
-        console.log(`${change} Signal Hill Motel ${room.pricing_period}: $${currentPrice} → $${newFOMOPrice} (${amount > 15 ? '🔥 MASSIVE MOVE' : amount > 8 ? '⚡ BIG MOVE' : 'change'}: $${amount})`);
-      } else {
-        console.log(`🔄 MICRO-ADJUST Signal Hill Motel ${room.pricing_period}: $${currentPrice} → $${newFOMOPrice} (fine-tune: $${amount})`);
-      }
-    }
-  } catch (err) {
-    console.error('Error in EXTREME FOMO pricing update:', err);
-  }
-});
-
-// 8. MANUAL PRICE OVERRIDE SYSTEM
-app.post('/api/admin/override-price', async (req, res) => {
-  try {
-    const { roomId, price, duration = 24, reason = "Manual override" } = req.body;
-    
-    if (price < PRICING_CONFIG.MINIMUM_PRICE || price > PRICING_CONFIG.MAXIMUM_PRICE) {
-      return res.status(400).json({ 
-        error: `Price must be between $${PRICING_CONFIG.MINIMUM_PRICE} and $${PRICING_CONFIG.MAXIMUM_PRICE}` 
-      });
-    }
-    
-    // Update database immediately
-    await pool.query(
-      'UPDATE room_inventory SET current_price = $1 WHERE id = $2',
-      [price, roomId]
-    );
-    
-    res.json({ 
-      message: `MANUAL OVERRIDE: Price set to $${price} for room ${roomId}`,
-      reason: reason
-    });
-    
-  } catch (error) {
-    console.error('Error setting price override:', error);
-    res.status(500).json({ error: 'Failed to set price override' });
-  }
-});
-
-// 9. PRICING STATUS FOR ADMIN
-app.get('/api/admin/pricing-status', async (req, res) => {
-  try {
-    const roomsResult = await pool.query('SELECT * FROM room_inventory WHERE status = $1', ['active']);
-    const rooms = roomsResult.rows;
-    
-    const pricingStatus = rooms.map(room => {
-      const optimalPrice = calculateFOMOPrice(room);
-      const currentPrice = parseFloat(room.current_price);
-      
-      return {
-        roomId: room.id,
-        roomType: room.room_type,
-        pricingPeriod: room.pricing_period,
-        currentPrice,
-        optimalPrice,
-        revenueOpportunity: optimalPrice - currentPrice,
-        roomsAvailable: room.rooms_available,
-        lastUpdate: room.last_price_update
-      };
-    });
-    
-    res.json({ 
-      pricingStatus,
-      fomoActive: true,
-      updateInterval: `${PRICING_CONFIG.UPDATE_INTERVAL} minute`,
-      priceRange: `$${PRICING_CONFIG.MINIMUM_PRICE}-$${PRICING_CONFIG.MAXIMUM_PRICE}`,
-      extremeFomo: true,
-      guaranteedChanges: true
-    });
-    
-  } catch (error) {
-    console.error('Error getting pricing status:', error);
-    res.status(500).json({ error: 'Failed to get pricing status' });
-  }
-});
-
-// Get all available rooms - WITH EXTREME FOMO DATA
-app.get('/api/rooms', async (req, res) => {
-    try {
-        const query = `SELECT * FROM room_inventory WHERE status = 'active'`;
-        const result = await pool.query(query);
+    def __init__(self, motel_id: str, total_rooms: int = 15):
+        self.motel_id = motel_id
+        self.total_rooms = total_rooms
+        self.price_history = []  # Track price changes for momentum
         
-        // Add motel information and EXTREME FOMO indicators
-        const rooms = result.rows.map(room => ({
-            ...room,
-            motel_name: 'Signal Hill Motel',
-            motel_address: 'Signal Hill, CA',
-            total_rooms: 15,
-            active_bookings: 0,
-            // EXTREME FOMO indicators
-            price_last_updated: room.last_price_update,
-            next_update: '1 minute',
-            fomo_active: true,
-            extreme_fomo: true,
-            guaranteed_changes: true
-        }));
+        # Pricing constraints (80% to 120% of base price)
+        self.MIN_MULTIPLIER = 0.80
+        self.MAX_MULTIPLIER = 1.20
         
-        res.json(rooms);
-    } catch (err) {
-        console.error(err);
-        res.status(500).json({ error: 'Server error' });
-    }
-});
-
-// Book a room (30-minute hold)
-app.post('/api/rooms/:id/book', async (req, res) => {
-    try {
-        const { id } = req.params;
-        const { user_email, check_in_date = new Date().toISOString().split('T')[0] } = req.body;
+        # FOMO psychology weights
+        self.FOMO_WEIGHTS = {
+            'occupancy_urgency': 0.35,    # Primary driver
+            'day_demand': 0.25,           # Day of week importance
+            'time_pressure': 0.20,        # Time-based urgency
+            'traffic_momentum': 0.15,     # User activity
+            'randomness': 0.05           # Market volatility
+        }
+    
+    def calculate_dynamic_price(
+        self,
+        base_price: float,
+        day_of_week: int,  # 0=Monday, 6=Sunday
+        current_occupancy: float,  # 0.0 to 1.0
+        time_of_day: int,  # 24hr format (0-23)
+        previous_price: float,
+        user_traffic: int,  # Number of users viewing
+        minutes_since_last_change: int = 1
+    ) -> Dict:
+        """
+        Calculate new price with FOMO psychology and business intelligence.
         
-        if (!user_email) {
-            return res.status(400).json({ error: 'Email is required' });
+        Returns:
+            {
+                'new_price': float,
+                'price_change': float,
+                'fomo_message': str,
+                'urgency_level': str,
+                'reasoning': str
+            }
+        """
+        
+        # 1. DAY-OF-WEEK DEMAND MULTIPLIER
+        day_multiplier = self._get_day_multiplier(day_of_week, time_of_day)
+        
+        # 2. OCCUPANCY-BASED PRICING (Core FOMO driver)
+        occupancy_multiplier = self._get_occupancy_multiplier(
+            current_occupancy, day_of_week, time_of_day
+        )
+        
+        # 3. TIME-PRESSURE MULTIPLIER
+        time_multiplier = self._get_time_pressure_multiplier(time_of_day, day_of_week)
+        
+        # 4. TRAFFIC MOMENTUM MULTIPLIER
+        traffic_multiplier = self._get_traffic_multiplier(user_traffic, current_occupancy)
+        
+        # 5. SMART RANDOMNESS (Market volatility simulation)
+        volatility_multiplier = self._get_smart_volatility(
+            previous_price, base_price, current_occupancy
+        )
+        
+        # 6. CALCULATE NEW PRICE
+        price_multiplier = (
+            day_multiplier * self.FOMO_WEIGHTS['day_demand'] +
+            occupancy_multiplier * self.FOMO_WEIGHTS['occupancy_urgency'] +
+            time_multiplier * self.FOMO_WEIGHTS['time_pressure'] +
+            traffic_multiplier * self.FOMO_WEIGHTS['traffic_momentum'] +
+            volatility_multiplier * self.FOMO_WEIGHTS['randomness']
+        )
+        
+        # Apply constraints (80% to 120% of base price)
+        price_multiplier = max(self.MIN_MULTIPLIER, min(self.MAX_MULTIPLIER, price_multiplier))
+        
+        new_price = round(base_price * price_multiplier, 2)
+        price_change = new_price - previous_price
+        
+        # 7. GENERATE FOMO MESSAGING
+        fomo_data = self._generate_fomo_messaging(
+            new_price, previous_price, current_occupancy, user_traffic, day_of_week
+        )
+        
+        # 8. TRACK PRICE HISTORY FOR MOMENTUM
+        self._update_price_history(new_price, price_change)
+        
+        return {
+            'new_price': new_price,
+            'price_change': price_change,
+            'price_multiplier': price_multiplier,
+            'fomo_message': fomo_data['message'],
+            'urgency_level': fomo_data['urgency'],
+            'reasoning': fomo_data['reasoning'],
+            'components': {
+                'day_factor': day_multiplier,
+                'occupancy_factor': occupancy_multiplier,
+                'time_factor': time_multiplier,
+                'traffic_factor': traffic_multiplier,
+                'volatility_factor': volatility_multiplier
+            }
+        }
+    
+    def _get_day_multiplier(self, day_of_week: int, time_of_day: int) -> float:
+        """Calculate demand multiplier based on day of week and business patterns."""
+        
+        # Base day multipliers (your business intelligence)
+        day_base = {
+            0: 0.85,  # Monday - Low demand
+            1: 0.90,  # Tuesday - Low demand  
+            2: 0.95,  # Wednesday - Building
+            3: 1.05,  # Thursday - Pre-weekend
+            4: 1.25,  # Friday - High demand
+            5: 1.30,  # Saturday - Peak demand
+            6: 1.15   # Sunday - Moderate demand
         }
         
-        const roomResult = await pool.query(
-            'SELECT * FROM room_inventory WHERE id = $1 AND status = $2',
-            [id, 'active']
-        );
+        base_multiplier = day_base[day_of_week]
         
-        if (roomResult.rows.length === 0) {
-            return res.status(404).json({ error: 'Room not found or unavailable' });
-        }
+        # Time-of-day adjustments for weekend demand
+        if day_of_week >= 4:  # Friday-Sunday
+            if 14 <= time_of_day <= 18:  # 2-6 PM critical booking window
+                base_multiplier *= 1.15
+            elif time_of_day >= 20:  # Late evening urgency
+                base_multiplier *= 1.10
+                
+        return base_multiplier
+    
+    def _get_occupancy_multiplier(self, occupancy: float, day_of_week: int, time_of_day: int) -> float:
+        """Core FOMO driver - occupancy-based pricing with psychological triggers."""
         
-        const room = roomResult.rows[0];
-        const expiresAt = new Date(Date.now() + 30 * 60 * 1000);
+        if day_of_week >= 4:  # Weekend (Fri-Sun) - Revenue maximization
+            if occupancy >= 0.90:
+                return 1.20  # 90%+ = Maximum FOMO pricing
+            elif occupancy >= 0.80:
+                return 1.15  # 80%+ = High urgency
+            elif occupancy >= 0.70:
+                return 1.12  # 70%+ = Building pressure
+            elif occupancy >= 0.50:
+                return 1.08  # 50%+ = Moderate premium
+            else:
+                return 1.05  # Low occupancy = slight premium (weekend baseline)
+                
+        elif day_of_week <= 2:  # Monday-Wednesday - Fill rooms strategy
+            if occupancy >= 0.70:
+                return 1.10  # Surprisingly full = raise prices
+            elif occupancy >= 0.50:
+                return 1.02  # Half full = slight premium
+            elif occupancy >= 0.30:
+                return 0.95  # Low = discount to attract
+            else:
+                return 0.85  # Very low = aggressive discount
+                
+        else:  # Thursday - Balanced approach
+            if occupancy >= 0.80:
+                return 1.12
+            elif occupancy >= 0.60:
+                return 1.08
+            elif occupancy >= 0.40:
+                return 1.00
+            else:
+                return 0.92
+    
+    def _get_time_pressure_multiplier(self, time_of_day: int, day_of_week: int) -> float:
+        """Time-based urgency pricing for maximum FOMO effect."""
         
-        const bookingResult = await pool.query(
-            'INSERT INTO room_bookings (room_inventory_id, user_email, check_in_date, expires_at, locked_price) VALUES ($1, $2, $3, $4, $5) RETURNING *',
-            [id, user_email, check_in_date, expiresAt, room.current_price]
-        );
+        # Critical booking windows
+        if 14 <= time_of_day <= 18:  # 2-6 PM - Peak booking time
+            return 1.08
+        elif 19 <= time_of_day <= 22:  # 7-10 PM - Same-day urgency
+            return 1.12
+        elif time_of_day >= 23 or time_of_day <= 2:  # Late night - Desperate bookings
+            return 1.15
+        elif 6 <= time_of_day <= 10:  # Morning - Early bird planning
+            return 0.95
+        else:
+            return 1.00
+    
+    def _get_traffic_multiplier(self, user_traffic: int, occupancy: float) -> float:
+        """Traffic momentum - more viewers = higher demand signal."""
         
-        res.json({
-            message: 'Room booked successfully! Price locked for 30 minutes.',
-            booking: bookingResult.rows[0],
-            expires_in_minutes: 30,
-            locked_price: room.current_price,
-            fomo_warning: 'Prices change every minute - you locked in just in time!'
-        });
-        
-    } catch (err) {
-        console.error(err);
-        res.status(500).json({ error: 'Server error' });
-    }
-});
-
-// Get user's active bookings
-app.get('/api/bookings/:email', async (req, res) => {
-    try {
-        const { email } = req.params;
-        
-        const query = `
-            SELECT 
-                rb.*,
-                ri.room_type,
-                ri.pricing_period,
-                'Signal Hill Motel' as motel_name,
-                'Signal Hill, CA' as motel_address,
-                EXTRACT(EPOCH FROM (rb.expires_at - NOW())) as seconds_remaining
-            FROM room_bookings rb
-            JOIN room_inventory ri ON rb.room_inventory_id = ri.id
-            WHERE rb.user_email = $1 AND rb.status = 'active'
-            ORDER BY rb.expires_at ASC
-        `;
-        
-        const result = await pool.query(query, [email]);
-        res.json(result.rows);
-    } catch (err) {
-        console.error(err);
-        res.status(500).json({ error: 'Server error' });
-    }
-});
-
-// Health check
-app.get('/health', (req, res) => {
-    res.json({ 
-        status: 'OK', 
-        timestamp: new Date().toISOString(),
-        service: 'DOT - GUARANTEED PRICE CHANGES API',
-        fomo_active: true,
-        extreme_fomo: true,
-        guaranteed_changes: true,
-        update_interval: '1 minute'
-    });
-});
-
-// Force immediate price update for testing
-app.get('/api/force-update', async (req, res) => {
-    try {
-        console.log('🚨 MANUAL FORCE UPDATE TRIGGERED!');
-        
-        const roomsResult = await pool.query('SELECT * FROM room_inventory WHERE status = $1', ['active']);
-        const rooms = roomsResult.rows;
-        
-        for (const room of rooms) {
-            const currentPrice = parseFloat(room.current_price);
-            const newFOMOPrice = calculateFOMOPrice(room);
+        # Normalize traffic (assuming 1-50 concurrent viewers is normal range)
+        if user_traffic >= 30:
+            traffic_factor = 1.10  # High traffic = demand surge
+        elif user_traffic >= 20:
+            traffic_factor = 1.05  # Moderate traffic
+        elif user_traffic >= 10:
+            traffic_factor = 1.02  # Normal traffic
+        elif user_traffic >= 5:
+            traffic_factor = 1.00  # Low traffic
+        else:
+            traffic_factor = 0.98  # Very low traffic = slight discount
             
-            await pool.query(
-                'UPDATE room_inventory SET current_price = $1, last_price_update = NOW() WHERE id = $2',
-                [newFOMOPrice, room.id]
-            );
+        # Amplify traffic effect when occupancy is high (scarcity + demand)
+        if occupancy >= 0.80 and user_traffic >= 20:
+            traffic_factor *= 1.05  # Compound effect
             
-            console.log(`🔄 FORCED UPDATE: ${room.pricing_period} $${currentPrice} → $${newFOMOPrice}`);
+        return traffic_factor
+    
+    def _get_smart_volatility(self, previous_price: float, base_price: float, occupancy: float) -> float:
+        """Smart randomness that creates market-like volatility with business intelligence."""
+        
+        # Base volatility
+        random_factor = random.uniform(-0.03, 0.03)  # ±3% base volatility
+        
+        # Increase volatility during high-stakes periods
+        if occupancy >= 0.75:
+            random_factor *= 1.5  # More dramatic swings when nearly full
+        elif occupancy <= 0.30:
+            random_factor *= 1.3  # More dramatic discounts when empty
+            
+        # Momentum-based adjustments (simulate market psychology)
+        price_vs_base = previous_price / base_price
+        if price_vs_base > 1.10:  # Price well above base
+            random_factor -= 0.01  # Slight downward pressure
+        elif price_vs_base < 0.90:  # Price well below base  
+            random_factor += 0.01  # Slight upward pressure
+            
+        return 1.0 + random_factor
+    
+    def _generate_fomo_messaging(
+        self, 
+        new_price: float, 
+        previous_price: float, 
+        occupancy: float, 
+        traffic: int, 
+        day_of_week: int
+    ) -> Dict:
+        """Generate FOMO messages and urgency levels for maximum psychological impact."""
+        
+        price_change = new_price - previous_price
+        price_change_pct = (price_change / previous_price) * 100 if previous_price > 0 else 0
+        
+        # Determine urgency level
+        if occupancy >= 0.85:
+            urgency = "CRITICAL"
+        elif occupancy >= 0.70:
+            urgency = "HIGH"
+        elif occupancy >= 0.50:
+            urgency = "MEDIUM"
+        else:
+            urgency = "LOW"
+            
+        # Generate context-aware FOMO messages
+        messages = []
+        
+        # Price movement messages
+        if abs(price_change) >= 2:
+            if price_change > 0:
+                messages.append(f"🔥 PRICE SURGE! +${abs(price_change):.0f} in the last minute!")
+            else:
+                messages.append(f"📉 FLASH DROP! -${abs(price_change):.0f} limited time!")
+        elif abs(price_change) >= 1:
+            if price_change > 0:
+                messages.append(f"📈 Price climbing: +${price_change:.0f}")
+            else:
+                messages.append(f"💰 Deal alert: -${abs(price_change):.0f}")
+                
+        # Occupancy-based messages
+        rooms_left = max(1, int(self.total_rooms * (1 - occupancy)))
+        if occupancy >= 0.90:
+            messages.append(f"🚨 ONLY {rooms_left} ROOMS LEFT!")
+        elif occupancy >= 0.80:
+            messages.append(f"⚡ {rooms_left} rooms remaining at this price")
+        elif occupancy >= 0.70:
+            messages.append(f"🏃‍♂️ Filling up fast - {rooms_left} left")
+            
+        # Traffic-based messages
+        if traffic >= 25:
+            messages.append(f"👀 {traffic} people viewing this deal!")
+        elif traffic >= 15:
+            messages.append(f"🔥 High demand - {traffic} active viewers")
+            
+        # Day-specific messages
+        if day_of_week >= 4 and occupancy >= 0.70:
+            messages.append("🎉 Weekend rush - book before it's gone!")
+        elif day_of_week <= 2 and price_change < 0:
+            messages.append("💡 Weekday special - limited time pricing!")
+            
+        # Select best message or combine
+        if messages:
+            primary_message = messages[0]
+            if len(messages) > 1:
+                primary_message += f" {messages[1]}"
+        else:
+            primary_message = f"Current rate: ${new_price:.0f}"
+            
+        # Generate reasoning for transparency/debugging
+        reasoning_parts = []
+        if abs(price_change_pct) >= 2:
+            reasoning_parts.append(f"Price moved {price_change_pct:+.1f}%")
+        reasoning_parts.append(f"{occupancy:.0%} occupied")
+        if traffic >= 20:
+            reasoning_parts.append(f"High traffic ({traffic} viewers)")
+        reasoning = " | ".join(reasoning_parts)
+        
+        return {
+            'message': primary_message,
+            'urgency': urgency,
+            'reasoning': reasoning
         }
+    
+    def _update_price_history(self, new_price: float, change: float):
+        """Track price history for momentum analysis."""
+        self.price_history.append({
+            'price': new_price,
+            'change': change,
+            'timestamp': datetime.now().isoformat()
+        })
         
-        res.json({ 
-            message: 'Pricing update forced! GUARANTEED price changes applied!',
-            timestamp: new Date().toISOString(),
-            rooms_updated: rooms.length
-        });
+        # Keep only last 10 price points
+        if len(self.price_history) > 10:
+            self.price_history.pop(0)
+    
+    def get_price_trend(self) -> str:
+        """Analyze recent price trend for additional FOMO messaging."""
+        if len(self.price_history) < 3:
+            return "STABLE"
+            
+        recent_changes = [item['change'] for item in self.price_history[-3:]]
+        total_change = sum(recent_changes)
         
-    } catch (err) {
-        console.error('Error in forced update:', err);
-        res.status(500).json({ error: 'Failed to force update' });
-    }
-});
+        if total_change >= 5:
+            return "SURGING"
+        elif total_change <= -5:
+            return "DROPPING"
+        elif abs(total_change) <= 2:
+            return "STABLE"
+        else:
+            return "VOLATILE"
 
-app.listen(PORT, () => {
-    console.log(`🔥 DOT GUARANTEED PRICE CHANGES API running on port ${PORT}`);
-    console.log(`⚡ Prices GUARANTEED to change every ${PRICING_CONFIG.UPDATE_INTERVAL} minute!`);
-    console.log(`💰 Price range: $${PRICING_CONFIG.MINIMUM_PRICE}-$${PRICING_CONFIG.MAXIMUM_PRICE}`);
-});
 
-// Log startup message
-console.log('🎯 GUARANTEED PRICE CHANGES SYSTEM ACTIVATED!');
-console.log('📈 Prices WILL surge and drop every 1 MINUTE - NO EXCEPTIONS!');
-console.log('🔥 Creating MAXIMUM urgency for Signal Hill Motel!');
-console.log('⚡ Every price update is GUARANTEED to change - no more stable prices!');
+# Example usage and testing
+def simulate_pricing_scenario():
+    """Simulate real-world pricing scenarios for Signal Hill Motel."""
+    
+    engine = MotelPricingEngine("signal_hill_motel", total_rooms=15)
+    
+    # Test scenarios
+    scenarios = [
+        {
+            "name": "Friday Evening Rush",
+            "base_price": 86,
+            "day_of_week": 4,  # Friday
+            "occupancy": 0.85,
+            "time_of_day": 19,  # 7 PM
+            "traffic": 28
+        },
+        {
+            "name": "Tuesday Morning Slow",
+            "base_price": 86,
+            "day_of_week": 1,  # Tuesday
+            "occupancy": 0.25,
+            "time_of_day": 10,  # 10 AM
+            "traffic": 3
+        },
+        {
+            "name": "Saturday Peak",
+            "base_price": 86,
+            "day_of_week": 5,  # Saturday
+            "occupancy": 0.95,
+            "time_of_day": 15,  # 3 PM
+            "traffic": 45
+        }
+    ]
+    
+    print("=== SIGNAL HILL MOTEL DYNAMIC PRICING SIMULATION ===\n")
+    
+    for scenario in scenarios:
+        print(f"📊 SCENARIO: {scenario['name']}")
+        print(f"Base Price: ${scenario['base_price']}")
+        print(f"Day: {['Mon','Tue','Wed','Thu','Fri','Sat','Sun'][scenario['day_of_week']]}")
+        print(f"Occupancy: {scenario['occupancy']:.0%}")
+        print(f"Time: {scenario['time_of_day']}:00")
+        print(f"Traffic: {scenario['traffic']} viewers")
+        
+        # Simulate price changes over 5 minutes
+        previous_price = scenario['base_price']
+        
+        for minute in range(1, 6):
+            result = engine.calculate_dynamic_price(
+                base_price=scenario['base_price'],
+                day_of_week=scenario['day_of_week'],
+                current_occupancy=scenario['occupancy'],
+                time_of_day=scenario['time_of_day'],
+                previous_price=previous_price,
+                user_traffic=scenario['traffic'],
+                minutes_since_last_change=1
+            )
+            
+            print(f"  Minute {minute}: ${result['new_price']:.0f} ({result['price_change']:+.0f}) - {result['fomo_message']}")
+            previous_price = result['new_price']
+            
+            # Simulate slight changes in traffic/occupancy
+            scenario['traffic'] += random.randint(-3, 3)
+            scenario['occupancy'] += random.uniform(-0.02, 0.02)
+            scenario['occupancy'] = max(0, min(1, scenario['occupancy']))
+        
+        print(f"  💡 Trend: {engine.get_price_trend()}")
+        print("\n" + "="*50 + "\n")
+
+# Run simulation
+if __name__ == "__main__":
+    simulate_pricing_scenario()
