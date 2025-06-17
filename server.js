@@ -8,203 +8,188 @@ const pool = require('./database/connection');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// EXTREME FOMO PRICING CONFIGURATION
-const PRICING_CONFIG = {
-  MINIMUM_PRICE: 75,    // Never go below $75
-  MAXIMUM_PRICE: 130,   // Max surge price $130
-  TOTAL_ROOMS: 15,      // Signal Hill Motel total rooms
-  UPDATE_INTERVAL: 1,   // Update prices every 1 MINUTE for EXTREME FOMO
-};
-
 // Middleware
 app.use(cors());
 app.use(express.json());
 
-// 1. DAY-OF-WEEK FOMO MULTIPLIERS
-const getDayOfWeekMultiplier = () => {
-  const today = new Date();
-  const dayOfWeek = today.getDay(); // 0=Sunday, 6=Saturday
-  const hour = today.getHours();
+// SIGNAL HILL MOTEL DAY-SPECIFIC PRICING ENGINE
+const calculateDynamicPrice = (
+  base_price = 86,
+  day_of_week,          // 'Sunday', 'Monday', etc.
+  current_occupancy,    // 0-100 percentage
+  time_of_day,          // 0-23 hours
+  previous_price,       // Last price
+  user_traffic          // Number of users viewing
+) => {
   
-  const dayMultipliers = {
-    0: 0.85, // Sunday - Fill rooms
-    1: 0.90, // Monday - Fill rooms  
-    2: 0.95, // Tuesday - Slight discount
-    3: 1.05, // Wednesday - Building demand
-    4: 1.15, // Thursday - Pre-weekend premium
-    5: 1.35, // Friday - Peak demand
-    6: 1.40  // Saturday - Peak demand
+  // Convert day to number for easier logic
+  const dayMap = {
+    'Sunday': 0, 'Monday': 1, 'Tuesday': 2, 'Wednesday': 3,
+    'Thursday': 4, 'Friday': 5, 'Saturday': 6
   };
+  const dayNum = dayMap[day_of_week];
   
-  let multiplier = dayMultipliers[dayOfWeek];
-  
-  // Same-day booking FOMO
-  if (dayOfWeek >= 5 && hour >= 16) multiplier *= 1.15; // Weekend same-day +15%
-  if (dayOfWeek <= 2 && hour >= 18) multiplier *= 0.95; // Slow day evening -5%
-  
-  return multiplier;
-};
-
-// 2. OCCUPANCY-BASED FOMO PRICING
-const getOccupancyMultiplier = (roomsAvailable, dayOfWeek) => {
-  const occupancyRate = (PRICING_CONFIG.TOTAL_ROOMS - roomsAvailable) / PRICING_CONFIG.TOTAL_ROOMS;
-  
-  if (dayOfWeek >= 5) { // Weekend - maximize revenue with FOMO
-    if (occupancyRate >= 0.90) return 1.50; // 90%+ = +50% FOMO SURGE
-    if (occupancyRate >= 0.80) return 1.30; // 80%+ = +30% 
-    if (occupancyRate >= 0.70) return 1.20; // 70%+ = +20%
-    if (occupancyRate >= 0.50) return 1.10; // 50%+ = +10%
-    return 1.0;
-  } else if (dayOfWeek <= 2) { // Slow days - fill rooms
-    if (occupancyRate >= 0.70) return 1.15; // Actually filling = +15%
-    if (occupancyRate >= 0.50) return 1.05; // Normal = +5%
-    if (occupancyRate >= 0.30) return 0.95; // Low = -5%
-    return 0.85; // Very low = -15% to attract customers
-  } else { // Mid-week - balanced
-    if (occupancyRate >= 0.80) return 1.25;
-    if (occupancyRate >= 0.60) return 1.15;
-    if (occupancyRate >= 0.40) return 1.10;
-    return 0.98;
+  // Day-specific price ranges
+  let min_price, max_price;
+  if (dayNum <= 2) { // Sunday, Monday, Tuesday
+    min_price = 75;
+    max_price = 99;
+  } else { // Wednesday, Thursday, Friday, Saturday
+    min_price = 80;
+    max_price = 99;
   }
+  
+  // 1. OCCUPANCY BIAS (Primary driver)
+  let occupancy_multiplier;
+  const occupancy_decimal = current_occupancy / 100;
+  
+  if (dayNum <= 2) { // Low-demand days (Sun-Tue)
+    // Start higher, gradually drop to $75 if low occupancy
+    if (occupancy_decimal >= 0.80) {
+      occupancy_multiplier = 1.10; // High occupancy = push toward max
+    } else if (occupancy_decimal >= 0.60) {
+      occupancy_multiplier = 1.00; // Medium occupancy = neutral
+    } else if (occupancy_decimal >= 0.40) {
+      occupancy_multiplier = 0.90; // Low occupancy = bias downward
+    } else {
+      occupancy_multiplier = 0.80; // Very low = strong downward bias
+    }
+  } else { // Higher-demand days (Wed-Sat)
+    if (occupancy_decimal >= 0.85) {
+      occupancy_multiplier = 1.15; // High occupancy = push toward $99
+    } else if (occupancy_decimal >= 0.70) {
+      occupancy_multiplier = 1.08; // Good occupancy = upward bias
+    } else if (occupancy_decimal >= 0.50) {
+      occupancy_multiplier = 1.00; // Medium occupancy = neutral
+    } else if (occupancy_decimal >= 0.30) {
+      occupancy_multiplier = 0.95; // Low occupancy = slight downward
+    } else {
+      occupancy_multiplier = 0.88; // Very low = bias toward min price
+    }
+  }
+  
+  // 2. TIME-OF-DAY BIAS
+  let time_multiplier;
+  if (time_of_day >= 14 && time_of_day <= 18) { // 2-6 PM peak booking
+    time_multiplier = 1.05;
+  } else if (time_of_day >= 19 && time_of_day <= 22) { // Evening same-day bookings
+    time_multiplier = 1.08;
+  } else if (time_of_day >= 23 || time_of_day <= 2) { // Late night urgency
+    time_multiplier = 1.10;
+  } else if (time_of_day >= 6 && time_of_day <= 10) { // Morning planning
+    time_multiplier = 0.98;
+  } else {
+    time_multiplier = 1.00; // Neutral hours
+  }
+  
+  // 3. TRAFFIC BIAS (Demand signal)
+  let traffic_multiplier;
+  if (user_traffic >= 25) {
+    traffic_multiplier = 1.06; // High traffic = upward pressure
+  } else if (user_traffic >= 15) {
+    traffic_multiplier = 1.03; // Moderate traffic = slight upward
+  } else if (user_traffic >= 8) {
+    traffic_multiplier = 1.00; // Normal traffic = neutral
+  } else if (user_traffic >= 3) {
+    traffic_multiplier = 0.98; // Low traffic = slight downward
+  } else {
+    traffic_multiplier = 0.95; // Very low traffic = downward bias
+  }
+  
+  // 4. MARKET FLUCTUATION (0.5% to 3% randomness)
+  const random_factor = 1 + (Math.random() - 0.5) * 0.06; // ±3% max
+  const small_fluctuation = Math.max(0.995, Math.min(1.03, random_factor)); // Ensure 0.5%-3% range
+  
+  // 5. MOMENTUM BIAS (Prevent ping-ponging)
+  let momentum_multiplier = 1.0;
+  const price_vs_base = previous_price / base_price;
+  
+  if (price_vs_base > 1.10) { // Price well above base
+    momentum_multiplier = 0.98; // Slight downward pressure
+  } else if (price_vs_base < 0.90) { // Price well below base
+    momentum_multiplier = 1.02; // Slight upward pressure
+  }
+  
+  // 6. CALCULATE NEW PRICE
+  let new_price = base_price * 
+    occupancy_multiplier * 
+    time_multiplier * 
+    traffic_multiplier * 
+    small_fluctuation * 
+    momentum_multiplier;
+  
+  // 7. STRICT DAY-SPECIFIC PRICE CAPS
+  new_price = Math.max(min_price, Math.min(max_price, new_price));
+  
+  // 8. ROUND TO NEAREST DOLLAR
+  new_price = Math.round(new_price);
+  
+  return {
+    new_price: new_price,
+    price_change: new_price - previous_price,
+    day_range: `$${min_price}-$${max_price}`,
+    min_price: min_price,
+    max_price: max_price
+  };
 };
 
-// 3. GUARANTEED PRICE CHANGES - SUPER AGGRESSIVE VOLATILITY
-const getVolatilityMultiplier = () => {
-  const volatility = Math.random();
-  const timestamp = Date.now();
-  
-  // Use timestamp to ensure different results each minute
-  const timeBasedVariation = (timestamp % 1000) / 1000; // 0-1 based on milliseconds
-  
-  // 40% chance of BIG surge (instead of 15%)
-  if (volatility > 0.60) return 1.25 + (timeBasedVariation * 0.15); // +25% to +40%
-  
-  // 40% chance of BIG drop (instead of 15%)  
-  if (volatility < 0.40) return 0.70 - (timeBasedVariation * 0.10); // -30% to -40%
-  
-  // 20% chance of medium fluctuation - but still guaranteed change
-  return 1.0 + ((volatility - 0.5) * 0.50) + (timeBasedVariation * 0.20); // Always ±25%+
-};
-
-// 4. TIME-TO-CHECKIN URGENCY PRICING  
-const getUrgencyMultiplier = () => {
-  const now = new Date();
-  const hour = now.getHours();
-  const minute = now.getMinutes();
-  
-  // Add minute-based micro-variations for constant change
-  const minuteVariation = 1.0 + (minute / 100); // 1.00 to 1.59
-  
-  // Late night booking urgency
-  if (hour >= 22 || hour <= 6) return 1.20 * minuteVariation; // +20% + minute variation
-  
-  // Peak booking hours
-  if (hour >= 18 && hour <= 21) return 1.10 * minuteVariation; // +10% + minute variation
-  
-  // Early morning discount
-  if (hour >= 6 && hour <= 10) return 0.95 * minuteVariation; // -5% + minute variation
-  
-  return 1.0 * minuteVariation; // Always has minute-based variation
-};
-
-// 5. COMPETITIVE FOMO PRICING (vs Booking.com)
-const getCompetitiveMultiplier = (basePrice, roomsAvailable) => {
-  const bookingComPrice = 98; // Their price with taxes
-  const ourEquivalent = basePrice * 1.12; // Add estimated taxes
-  
-  // Add random competitive pressure
-  const competitivePressure = Math.random() * 0.20; // 0-20% variation
-  
-  // If we're much cheaper, CREATE FOMO by raising prices
-  if (ourEquivalent < bookingComPrice * 0.80) return 1.15 + competitivePressure; // +15% + random
-  
-  // If low inventory, FOMO pricing regardless of competition
-  if (roomsAvailable <= 5) return 1.10 + competitivePressure; // +10% + random
-  
-  // If we're more expensive, create DEAL FOMO
-  if (ourEquivalent > bookingComPrice * 1.05) return 0.90 + competitivePressure; // -10% + random
-  
-  return 1.0 + competitivePressure; // Always has random variation
-};
-
-// 6. MAIN FOMO PRICING ALGORITHM
-const calculateFOMOPrice = (room) => {
-  const {
-    base_price_morning,
-    base_price_night,
-    pricing_period,
-    rooms_available,
-    view_count = 0
-  } = room;
-  
-  const basePrice = pricing_period === 'morning' 
-    ? parseFloat(base_price_morning) 
-    : parseFloat(base_price_night);
-  
-  const dayOfWeek = new Date().getDay();
-  
-  // Apply all FOMO multipliers - ALL have randomness built in now
-  const dayMultiplier = getDayOfWeekMultiplier();
-  const occupancyMultiplier = getOccupancyMultiplier(rooms_available, dayOfWeek);
-  const volatilityMultiplier = getVolatilityMultiplier(); // GUARANTEED variation
-  const urgencyMultiplier = getUrgencyMultiplier(); // Minute-based variation
-  const competitiveMultiplier = getCompetitiveMultiplier(basePrice, rooms_available); // Random variation
-  
-  // Calculate FOMO price
-  let fomoPrice = basePrice * 
-    dayMultiplier * 
-    occupancyMultiplier * 
-    volatilityMultiplier * 
-    urgencyMultiplier * 
-    competitiveMultiplier;
-  
-  // Apply hard limits
-  fomoPrice = Math.max(PRICING_CONFIG.MINIMUM_PRICE, 
-                       Math.min(PRICING_CONFIG.MAXIMUM_PRICE, fomoPrice));
-  
-  return Math.round(fomoPrice);
-};
-
-// 7. EXTREME FOMO PRICING ENGINE - RUNS EVERY 1 MINUTE!
+// PRICING ENGINE WITH 60-SECOND UPDATES
 cron.schedule('*/1 * * * *', async () => {
   try {
-    console.log('🔥 GUARANTEED PRICE CHANGES - Every 1 MINUTE!');
+    console.log('🔥 DAY-SPECIFIC PRICING UPDATE - Every 1 MINUTE!');
     
     const roomsResult = await pool.query('SELECT * FROM room_inventory WHERE status = $1', ['active']);
     const rooms = roomsResult.rows;
     
+    // Get current day and time
+    const now = new Date();
+    const currentDay = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'][now.getDay()];
+    const currentHour = now.getHours();
+    
     for (const room of rooms) {
       const currentPrice = parseFloat(room.current_price);
-      const newFOMOPrice = calculateFOMOPrice(room);
+      const occupancyPercent = ((15 - room.rooms_available) / 15) * 100; // Convert to percentage
+      const userTraffic = room.view_count || Math.floor(Math.random() * 15) + 5; // Simulate traffic
       
-      // FORCE UPDATE - Always update price (remove the $1 minimum difference)
-      await pool.query(
-        'UPDATE room_inventory SET current_price = $1, last_price_update = NOW() WHERE id = $2',
-        [newFOMOPrice, room.id]
+      const result = calculateDynamicPrice(
+        86,           // base_price
+        currentDay,   // day_of_week
+        occupancyPercent, // current_occupancy %
+        currentHour,  // time_of_day
+        currentPrice, // previous_price
+        userTraffic   // user_traffic
       );
       
-      const change = newFOMOPrice > currentPrice ? '📈 SURGE' : '📉 DROP';
-      const amount = Math.abs(newFOMOPrice - currentPrice);
+      // Always update price (guaranteed changes)
+      await pool.query(
+        'UPDATE room_inventory SET current_price = $1, last_price_update = NOW() WHERE id = $2',
+        [result.new_price, room.id]
+      );
       
-      if (amount >= 1) {
-        console.log(`${change} Signal Hill Motel ${room.pricing_period}: $${currentPrice} → $${newFOMOPrice} (${amount > 15 ? '🔥 MASSIVE MOVE' : amount > 8 ? '⚡ BIG MOVE' : 'change'}: $${amount})`);
-      } else {
-        console.log(`🔄 MICRO-ADJUST Signal Hill Motel ${room.pricing_period}: $${currentPrice} → $${newFOMOPrice} (fine-tune: $${amount})`);
-      }
+      const change = result.new_price > currentPrice ? '📈 SURGE' : result.new_price < currentPrice ? '📉 DROP' : '🔄 ADJUST';
+      const amount = Math.abs(result.new_price - currentPrice);
+      
+      console.log(`${change} ${currentDay} ${room.pricing_period}: $${currentPrice} → $${result.new_price} (${result.day_range}) ${amount > 0 ? `±$${amount}` : ''}`);
     }
   } catch (err) {
-    console.error('Error in EXTREME FOMO pricing update:', err);
+    console.error('Error in day-specific pricing update:', err);
   }
 });
 
-// 8. MANUAL PRICE OVERRIDE SYSTEM
+// MANUAL PRICE OVERRIDE SYSTEM
 app.post('/api/admin/override-price', async (req, res) => {
   try {
     const { roomId, price, duration = 24, reason = "Manual override" } = req.body;
     
-    if (price < PRICING_CONFIG.MINIMUM_PRICE || price > PRICING_CONFIG.MAXIMUM_PRICE) {
+    // Get current day to check valid range
+    const currentDay = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'][new Date().getDay()];
+    const dayNum = new Date().getDay();
+    const min_price = dayNum <= 2 ? 75 : 80; // Sun-Tue: $75, Wed-Sat: $80
+    const max_price = 99;
+    
+    if (price < min_price || price > max_price) {
       return res.status(400).json({ 
-        error: `Price must be between $${PRICING_CONFIG.MINIMUM_PRICE} and $${PRICING_CONFIG.MAXIMUM_PRICE}` 
+        error: `Price must be between $${min_price} and $${max_price} for ${currentDay}` 
       });
     }
     
@@ -215,7 +200,7 @@ app.post('/api/admin/override-price', async (req, res) => {
     );
     
     res.json({ 
-      message: `MANUAL OVERRIDE: Price set to $${price} for room ${roomId}`,
+      message: `MANUAL OVERRIDE: Price set to $${price} for room ${roomId} (${currentDay} range: $${min_price}-$${max_price})`,
       reason: reason
     });
     
@@ -225,35 +210,47 @@ app.post('/api/admin/override-price', async (req, res) => {
   }
 });
 
-// 9. PRICING STATUS FOR ADMIN
+// PRICING STATUS FOR ADMIN
 app.get('/api/admin/pricing-status', async (req, res) => {
   try {
     const roomsResult = await pool.query('SELECT * FROM room_inventory WHERE status = $1', ['active']);
     const rooms = roomsResult.rows;
     
+    const currentDay = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'][new Date().getDay()];
+    const dayNum = new Date().getDay();
+    const min_price = dayNum <= 2 ? 75 : 80;
+    const max_price = 99;
+    
     const pricingStatus = rooms.map(room => {
-      const optimalPrice = calculateFOMOPrice(room);
-      const currentPrice = parseFloat(room.current_price);
+      const occupancyPercent = ((15 - room.rooms_available) / 15) * 100;
+      const userTraffic = room.view_count || 5;
+      
+      const optimalResult = calculateDynamicPrice(
+        86, currentDay, occupancyPercent, new Date().getHours(),
+        parseFloat(room.current_price), userTraffic
+      );
       
       return {
         roomId: room.id,
         roomType: room.room_type,
         pricingPeriod: room.pricing_period,
-        currentPrice,
-        optimalPrice,
-        revenueOpportunity: optimalPrice - currentPrice,
+        currentPrice: parseFloat(room.current_price),
+        optimalPrice: optimalResult.new_price,
+        revenueOpportunity: optimalResult.new_price - parseFloat(room.current_price),
         roomsAvailable: room.rooms_available,
-        lastUpdate: room.last_price_update
+        lastUpdate: room.last_price_update,
+        dayRange: `$${min_price}-$${max_price}`,
+        currentDay: currentDay
       };
     });
     
     res.json({ 
       pricingStatus,
       fomoActive: true,
-      updateInterval: `${PRICING_CONFIG.UPDATE_INTERVAL} minute`,
-      priceRange: `$${PRICING_CONFIG.MINIMUM_PRICE}-$${PRICING_CONFIG.MAXIMUM_PRICE}`,
-      extremeFomo: true,
-      guaranteedChanges: true
+      updateInterval: '1 minute',
+      currentDay: currentDay,
+      priceRange: `$${min_price}-$${max_price}`,
+      daySpecificPricing: true
     });
     
   } catch (error) {
@@ -262,25 +259,30 @@ app.get('/api/admin/pricing-status', async (req, res) => {
   }
 });
 
-// Get all available rooms - WITH EXTREME FOMO DATA
+// Get all available rooms
 app.get('/api/rooms', async (req, res) => {
     try {
         const query = `SELECT * FROM room_inventory WHERE status = 'active'`;
         const result = await pool.query(query);
         
-        // Add motel information and EXTREME FOMO indicators
+        const currentDay = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'][new Date().getDay()];
+        const dayNum = new Date().getDay();
+        const min_price = dayNum <= 2 ? 75 : 80;
+        const max_price = 99;
+        
         const rooms = result.rows.map(room => ({
             ...room,
             motel_name: 'Signal Hill Motel',
             motel_address: 'Signal Hill, CA',
             total_rooms: 15,
             active_bookings: 0,
-            // EXTREME FOMO indicators
+            // Day-specific FOMO indicators
             price_last_updated: room.last_price_update,
             next_update: '1 minute',
             fomo_active: true,
-            extreme_fomo: true,
-            guaranteed_changes: true
+            day_specific_pricing: true,
+            current_day: currentDay,
+            price_range: `$${min_price}-$${max_price}`
         }));
         
         res.json(rooms);
@@ -317,12 +319,14 @@ app.post('/api/rooms/:id/book', async (req, res) => {
             [id, user_email, check_in_date, expiresAt, room.current_price]
         );
         
+        const currentDay = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'][new Date().getDay()];
+        
         res.json({
             message: 'Room booked successfully! Price locked for 30 minutes.',
             booking: bookingResult.rows[0],
             expires_in_minutes: 30,
             locked_price: room.current_price,
-            fomo_warning: 'Prices change every minute - you locked in just in time!'
+            fomo_warning: `Prices change every minute on ${currentDay}s - you locked in just in time!`
         });
         
     } catch (err) {
@@ -360,13 +364,19 @@ app.get('/api/bookings/:email', async (req, res) => {
 
 // Health check
 app.get('/health', (req, res) => {
+    const currentDay = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'][new Date().getDay()];
+    const dayNum = new Date().getDay();
+    const min_price = dayNum <= 2 ? 75 : 80;
+    const max_price = 99;
+    
     res.json({ 
         status: 'OK', 
         timestamp: new Date().toISOString(),
-        service: 'DOT - GUARANTEED PRICE CHANGES API',
+        service: 'DOT - Day-Specific Pricing API',
         fomo_active: true,
-        extreme_fomo: true,
-        guaranteed_changes: true,
+        day_specific_pricing: true,
+        current_day: currentDay,
+        price_range: `$${min_price}-$${max_price}`,
         update_interval: '1 minute'
     });
 });
@@ -379,20 +389,30 @@ app.get('/api/force-update', async (req, res) => {
         const roomsResult = await pool.query('SELECT * FROM room_inventory WHERE status = $1', ['active']);
         const rooms = roomsResult.rows;
         
+        const currentDay = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'][new Date().getDay()];
+        const currentHour = new Date().getHours();
+        
         for (const room of rooms) {
             const currentPrice = parseFloat(room.current_price);
-            const newFOMOPrice = calculateFOMOPrice(room);
+            const occupancyPercent = ((15 - room.rooms_available) / 15) * 100;
+            const userTraffic = Math.floor(Math.random() * 20) + 5;
+            
+            const result = calculateDynamicPrice(
+                86, currentDay, occupancyPercent, currentHour,
+                currentPrice, userTraffic
+            );
             
             await pool.query(
                 'UPDATE room_inventory SET current_price = $1, last_price_update = NOW() WHERE id = $2',
-                [newFOMOPrice, room.id]
+                [result.new_price, room.id]
             );
             
-            console.log(`🔄 FORCED UPDATE: ${room.pricing_period} $${currentPrice} → $${newFOMOPrice}`);
+            console.log(`🔄 FORCED UPDATE: ${currentDay} ${room.pricing_period} $${currentPrice} → $${result.new_price} (${result.day_range})`);
         }
         
         res.json({ 
-            message: 'Pricing update forced! GUARANTEED price changes applied!',
+            message: 'Day-specific pricing update forced!',
+            current_day: currentDay,
             timestamp: new Date().toISOString(),
             rooms_updated: rooms.length
         });
@@ -404,13 +424,18 @@ app.get('/api/force-update', async (req, res) => {
 });
 
 app.listen(PORT, () => {
-    console.log(`🔥 DOT GUARANTEED PRICE CHANGES API running on port ${PORT}`);
-    console.log(`⚡ Prices GUARANTEED to change every ${PRICING_CONFIG.UPDATE_INTERVAL} minute!`);
-    console.log(`💰 Price range: $${PRICING_CONFIG.MINIMUM_PRICE}-$${PRICING_CONFIG.MAXIMUM_PRICE}`);
+    const currentDay = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'][new Date().getDay()];
+    const dayNum = new Date().getDay();
+    const min_price = dayNum <= 2 ? 75 : 80;
+    const max_price = 99;
+    
+    console.log(`🔥 DOT DAY-SPECIFIC PRICING API running on port ${PORT}`);
+    console.log(`📅 Today: ${currentDay} | Range: $${min_price}-$${max_price}`);
+    console.log(`⚡ Prices update every 1 minute with smart bias!`);
 });
 
 // Log startup message
-console.log('🎯 GUARANTEED PRICE CHANGES SYSTEM ACTIVATED!');
-console.log('📈 Prices WILL surge and drop every 1 MINUTE - NO EXCEPTIONS!');
-console.log('🔥 Creating MAXIMUM urgency for Signal Hill Motel!');
-console.log('⚡ Every price update is GUARANTEED to change - no more stable prices!');
+console.log('🎯 DAY-SPECIFIC PRICING SYSTEM ACTIVATED!');
+console.log('📅 Sun/Mon/Tue: $75-$99 | Wed/Thu/Fri/Sat: $80-$99');
+console.log('🔥 Smart bias: Low occupancy → Lower prices | High occupancy → Higher prices');
+console.log('⚡ Updates every 60 seconds with 0.5%-3% randomness!');
