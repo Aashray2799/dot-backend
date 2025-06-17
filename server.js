@@ -8,12 +8,12 @@ const pool = require('./database/connection');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// FOMO PRICING CONFIGURATION
+// EXTREME FOMO PRICING CONFIGURATION
 const PRICING_CONFIG = {
   MINIMUM_PRICE: 75,    // Never go below $75
   MAXIMUM_PRICE: 130,   // Max surge price $130
   TOTAL_ROOMS: 15,      // Signal Hill Motel total rooms
-  UPDATE_INTERVAL: 2,   // Update prices every 2 MINUTES for FOMO
+  UPDATE_INTERVAL: 1,   // Update prices every 1 MINUTE for EXTREME FOMO
 };
 
 // Middleware
@@ -68,18 +68,18 @@ const getOccupancyMultiplier = (roomsAvailable, dayOfWeek) => {
   }
 };
 
-// 3. RANDOM FOMO VOLATILITY (Creates unpredictable price swings)
+// 3. EXTREME RANDOM FOMO VOLATILITY (Creates unpredictable price swings)
 const getVolatilityMultiplier = () => {
   const volatility = Math.random();
   
-  // 10% chance of sudden price spike (FOMO!)
-  if (volatility > 0.90) return 1.25; // "SURGE! +25% spike!"
+  // 15% chance of sudden price spike (EXTREME FOMO!)
+  if (volatility > 0.85) return 1.30; // "SURGE! +30% spike!"
   
-  // 10% chance of sudden price drop (DEAL ALERT!)
-  if (volatility < 0.10) return 0.80; // "FLASH SALE! -20% drop!"
+  // 15% chance of sudden price drop (FLASH DEAL!)
+  if (volatility < 0.15) return 0.75; // "FLASH SALE! -25% drop!"
   
-  // 80% chance of normal fluctuation ±10%
-  return 1.0 + (volatility - 0.5) * 0.20;
+  // 70% chance of normal fluctuation ±15%
+  return 1.0 + (volatility - 0.5) * 0.30;
 };
 
 // 4. TIME-TO-CHECKIN URGENCY PRICING
@@ -154,10 +154,10 @@ const calculateFOMOPrice = (room) => {
   return Math.round(fomoPrice);
 };
 
-// 7. FOMO PRICING ENGINE - RUNS EVERY 2 MINUTES!
-cron.schedule('*/2 * * * *', async () => {
+// 7. EXTREME FOMO PRICING ENGINE - RUNS EVERY 1 MINUTE!
+cron.schedule('*/1 * * * *', async () => {
   try {
-    console.log('🔥 FOMO PRICING UPDATE - Every 2 minutes!');
+    console.log('🔥 EXTREME FOMO PRICING UPDATE - Every 1 MINUTE!');
     
     const roomsResult = await pool.query('SELECT * FROM room_inventory WHERE status = $1', ['active']);
     const rooms = roomsResult.rows;
@@ -166,8 +166,8 @@ cron.schedule('*/2 * * * *', async () => {
       const currentPrice = parseFloat(room.current_price);
       const newFOMOPrice = calculateFOMOPrice(room);
       
-      // Update if price changed by $2 or more (creates noticeable FOMO)
-      if (Math.abs(newFOMOPrice - currentPrice) >= 2) {
+      // Update if price changed by $1 or more (creates constant FOMO)
+      if (Math.abs(newFOMOPrice - currentPrice) >= 1) {
         await pool.query(
           'UPDATE room_inventory SET current_price = $1, last_price_update = NOW() WHERE id = $2',
           [newFOMOPrice, room.id]
@@ -176,11 +176,13 @@ cron.schedule('*/2 * * * *', async () => {
         const change = newFOMOPrice > currentPrice ? '📈 SURGE' : '📉 DROP';
         const amount = Math.abs(newFOMOPrice - currentPrice);
         
-        console.log(`${change} Signal Hill Motel ${room.pricing_period}: $${currentPrice} → $${newFOMOPrice} (${amount > 10 ? '🔥 BIG MOVE' : 'change'}: $${amount})`);
+        console.log(`${change} Signal Hill Motel ${room.pricing_period}: $${currentPrice} → $${newFOMOPrice} (${amount > 15 ? '🔥 MASSIVE MOVE' : amount > 8 ? '⚡ BIG MOVE' : 'change'}: $${amount})`);
+      } else {
+        console.log(`✅ Signal Hill Motel ${room.pricing_period}: $${currentPrice} (stable)`);
       }
     }
   } catch (err) {
-    console.error('Error in FOMO pricing update:', err);
+    console.error('Error in EXTREME FOMO pricing update:', err);
   }
 });
 
@@ -237,8 +239,9 @@ app.get('/api/admin/pricing-status', async (req, res) => {
     res.json({ 
       pricingStatus,
       fomoActive: true,
-      updateInterval: `${PRICING_CONFIG.UPDATE_INTERVAL} minutes`,
-      priceRange: `$${PRICING_CONFIG.MINIMUM_PRICE}-$${PRICING_CONFIG.MAXIMUM_PRICE}`
+      updateInterval: `${PRICING_CONFIG.UPDATE_INTERVAL} minute`,
+      priceRange: `$${PRICING_CONFIG.MINIMUM_PRICE}-$${PRICING_CONFIG.MAXIMUM_PRICE}`,
+      extremeFomo: true
     });
     
   } catch (error) {
@@ -247,23 +250,24 @@ app.get('/api/admin/pricing-status', async (req, res) => {
   }
 });
 
-// Get all available rooms - WITH FOMO DATA
+// Get all available rooms - WITH EXTREME FOMO DATA
 app.get('/api/rooms', async (req, res) => {
     try {
         const query = `SELECT * FROM room_inventory WHERE status = 'active'`;
         const result = await pool.query(query);
         
-        // Add motel information and FOMO indicators
+        // Add motel information and EXTREME FOMO indicators
         const rooms = result.rows.map(room => ({
             ...room,
             motel_name: 'Signal Hill Motel',
             motel_address: 'Signal Hill, CA',
             total_rooms: 15,
             active_bookings: 0,
-            // FOMO indicators
+            // EXTREME FOMO indicators
             price_last_updated: room.last_price_update,
-            next_update: '2 minutes',
-            fomo_active: true
+            next_update: '1 minute',
+            fomo_active: true,
+            extreme_fomo: true
         }));
         
         res.json(rooms);
@@ -304,7 +308,8 @@ app.post('/api/rooms/:id/book', async (req, res) => {
             message: 'Room booked successfully! Price locked for 30 minutes.',
             booking: bookingResult.rows[0],
             expires_in_minutes: 30,
-            locked_price: room.current_price
+            locked_price: room.current_price,
+            fomo_warning: 'Prices change every minute - you locked in just in time!'
         });
         
     } catch (err) {
@@ -345,19 +350,53 @@ app.get('/health', (req, res) => {
     res.json({ 
         status: 'OK', 
         timestamp: new Date().toISOString(),
-        service: 'DOT - FOMO Pricing API',
+        service: 'DOT - EXTREME FOMO Pricing API',
         fomo_active: true,
-        update_interval: '2 minutes'
+        extreme_fomo: true,
+        update_interval: '1 minute'
     });
 });
 
+// Force immediate price update for testing
+app.get('/api/force-update', async (req, res) => {
+    try {
+        console.log('🚨 MANUAL FORCE UPDATE TRIGGERED!');
+        
+        const roomsResult = await pool.query('SELECT * FROM room_inventory WHERE status = $1', ['active']);
+        const rooms = roomsResult.rows;
+        
+        for (const room of rooms) {
+            const currentPrice = parseFloat(room.current_price);
+            const newFOMOPrice = calculateFOMOPrice(room);
+            
+            await pool.query(
+                'UPDATE room_inventory SET current_price = $1, last_price_update = NOW() WHERE id = $2',
+                [newFOMOPrice, room.id]
+            );
+            
+            console.log(`🔄 FORCED UPDATE: ${room.pricing_period} $${currentPrice} → $${newFOMOPrice}`);
+        }
+        
+        res.json({ 
+            message: 'Pricing update forced!',
+            timestamp: new Date().toISOString(),
+            rooms_updated: rooms.length
+        });
+        
+    } catch (err) {
+        console.error('Error in forced update:', err);
+        res.status(500).json({ error: 'Failed to force update' });
+    }
+});
+
 app.listen(PORT, () => {
-    console.log(`🔥 DOT FOMO PRICING API running on port ${PORT}`);
-    console.log(`⚡ Prices update every ${PRICING_CONFIG.UPDATE_INTERVAL} minutes for maximum FOMO!`);
+    console.log(`🔥 DOT EXTREME FOMO PRICING API running on port ${PORT}`);
+    console.log(`⚡ Prices update every ${PRICING_CONFIG.UPDATE_INTERVAL} minute for MAXIMUM FOMO!`);
     console.log(`💰 Price range: $${PRICING_CONFIG.MINIMUM_PRICE}-$${PRICING_CONFIG.MAXIMUM_PRICE}`);
 });
 
 // Log startup message
-console.log('🎯 FOMO PRICING SYSTEM ACTIVATED!');
-console.log('📈 Prices will surge and drop every 2 minutes');
-console.log('🔥 Creating maximum urgency for Signal Hill Motel!');
+console.log('🎯 EXTREME FOMO PRICING SYSTEM ACTIVATED!');
+console.log('📈 Prices will surge and drop every 1 MINUTE');
+console.log('🔥 Creating MAXIMUM urgency for Signal Hill Motel!');
+console.log('⚡ Price changes trigger at $1+ differences for constant movement!');
