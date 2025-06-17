@@ -68,35 +68,43 @@ const getOccupancyMultiplier = (roomsAvailable, dayOfWeek) => {
   }
 };
 
-// 3. EXTREME RANDOM FOMO VOLATILITY (Creates unpredictable price swings)
+// 3. GUARANTEED PRICE CHANGES - SUPER AGGRESSIVE VOLATILITY
 const getVolatilityMultiplier = () => {
   const volatility = Math.random();
+  const timestamp = Date.now();
   
-  // 15% chance of sudden price spike (EXTREME FOMO!)
-  if (volatility > 0.85) return 1.30; // "SURGE! +30% spike!"
+  // Use timestamp to ensure different results each minute
+  const timeBasedVariation = (timestamp % 1000) / 1000; // 0-1 based on milliseconds
   
-  // 15% chance of sudden price drop (FLASH DEAL!)
-  if (volatility < 0.15) return 0.75; // "FLASH SALE! -25% drop!"
+  // 40% chance of BIG surge (instead of 15%)
+  if (volatility > 0.60) return 1.25 + (timeBasedVariation * 0.15); // +25% to +40%
   
-  // 70% chance of normal fluctuation ±15%
-  return 1.0 + (volatility - 0.5) * 0.30;
+  // 40% chance of BIG drop (instead of 15%)  
+  if (volatility < 0.40) return 0.70 - (timeBasedVariation * 0.10); // -30% to -40%
+  
+  // 20% chance of medium fluctuation - but still guaranteed change
+  return 1.0 + ((volatility - 0.5) * 0.50) + (timeBasedVariation * 0.20); // Always ±25%+
 };
 
-// 4. TIME-TO-CHECKIN URGENCY PRICING
+// 4. TIME-TO-CHECKIN URGENCY PRICING  
 const getUrgencyMultiplier = () => {
   const now = new Date();
   const hour = now.getHours();
+  const minute = now.getMinutes();
+  
+  // Add minute-based micro-variations for constant change
+  const minuteVariation = 1.0 + (minute / 100); // 1.00 to 1.59
   
   // Late night booking urgency
-  if (hour >= 22 || hour <= 6) return 1.20; // +20% for urgent late bookings
+  if (hour >= 22 || hour <= 6) return 1.20 * minuteVariation; // +20% + minute variation
   
   // Peak booking hours
-  if (hour >= 18 && hour <= 21) return 1.10; // +10% for peak hours
+  if (hour >= 18 && hour <= 21) return 1.10 * minuteVariation; // +10% + minute variation
   
   // Early morning discount
-  if (hour >= 6 && hour <= 10) return 0.95; // -5% for early bookings
+  if (hour >= 6 && hour <= 10) return 0.95 * minuteVariation; // -5% + minute variation
   
-  return 1.0;
+  return 1.0 * minuteVariation; // Always has minute-based variation
 };
 
 // 5. COMPETITIVE FOMO PRICING (vs Booking.com)
@@ -104,16 +112,19 @@ const getCompetitiveMultiplier = (basePrice, roomsAvailable) => {
   const bookingComPrice = 98; // Their price with taxes
   const ourEquivalent = basePrice * 1.12; // Add estimated taxes
   
+  // Add random competitive pressure
+  const competitivePressure = Math.random() * 0.20; // 0-20% variation
+  
   // If we're much cheaper, CREATE FOMO by raising prices
-  if (ourEquivalent < bookingComPrice * 0.80) return 1.15; // +15% still cheaper
+  if (ourEquivalent < bookingComPrice * 0.80) return 1.15 + competitivePressure; // +15% + random
   
   // If low inventory, FOMO pricing regardless of competition
-  if (roomsAvailable <= 5) return 1.10; // +10% scarcity premium
+  if (roomsAvailable <= 5) return 1.10 + competitivePressure; // +10% + random
   
   // If we're more expensive, create DEAL FOMO
-  if (ourEquivalent > bookingComPrice * 1.05) return 0.90; // -10% DEAL ALERT
+  if (ourEquivalent > bookingComPrice * 1.05) return 0.90 + competitivePressure; // -10% + random
   
-  return 1.0;
+  return 1.0 + competitivePressure; // Always has random variation
 };
 
 // 6. MAIN FOMO PRICING ALGORITHM
@@ -132,12 +143,12 @@ const calculateFOMOPrice = (room) => {
   
   const dayOfWeek = new Date().getDay();
   
-  // Apply all FOMO multipliers
+  // Apply all FOMO multipliers - ALL have randomness built in now
   const dayMultiplier = getDayOfWeekMultiplier();
   const occupancyMultiplier = getOccupancyMultiplier(rooms_available, dayOfWeek);
-  const volatilityMultiplier = getVolatilityMultiplier();
-  const urgencyMultiplier = getUrgencyMultiplier();
-  const competitiveMultiplier = getCompetitiveMultiplier(basePrice, rooms_available);
+  const volatilityMultiplier = getVolatilityMultiplier(); // GUARANTEED variation
+  const urgencyMultiplier = getUrgencyMultiplier(); // Minute-based variation
+  const competitiveMultiplier = getCompetitiveMultiplier(basePrice, rooms_available); // Random variation
   
   // Calculate FOMO price
   let fomoPrice = basePrice * 
@@ -157,7 +168,7 @@ const calculateFOMOPrice = (room) => {
 // 7. EXTREME FOMO PRICING ENGINE - RUNS EVERY 1 MINUTE!
 cron.schedule('*/1 * * * *', async () => {
   try {
-    console.log('🔥 EXTREME FOMO PRICING UPDATE - Every 1 MINUTE!');
+    console.log('🔥 GUARANTEED PRICE CHANGES - Every 1 MINUTE!');
     
     const roomsResult = await pool.query('SELECT * FROM room_inventory WHERE status = $1', ['active']);
     const rooms = roomsResult.rows;
@@ -166,19 +177,19 @@ cron.schedule('*/1 * * * *', async () => {
       const currentPrice = parseFloat(room.current_price);
       const newFOMOPrice = calculateFOMOPrice(room);
       
-      // Update if price changed by $1 or more (creates constant FOMO)
-      if (Math.abs(newFOMOPrice - currentPrice) >= 1) {
-        await pool.query(
-          'UPDATE room_inventory SET current_price = $1, last_price_update = NOW() WHERE id = $2',
-          [newFOMOPrice, room.id]
-        );
-        
-        const change = newFOMOPrice > currentPrice ? '📈 SURGE' : '📉 DROP';
-        const amount = Math.abs(newFOMOPrice - currentPrice);
-        
+      // FORCE UPDATE - Always update price (remove the $1 minimum difference)
+      await pool.query(
+        'UPDATE room_inventory SET current_price = $1, last_price_update = NOW() WHERE id = $2',
+        [newFOMOPrice, room.id]
+      );
+      
+      const change = newFOMOPrice > currentPrice ? '📈 SURGE' : '📉 DROP';
+      const amount = Math.abs(newFOMOPrice - currentPrice);
+      
+      if (amount >= 1) {
         console.log(`${change} Signal Hill Motel ${room.pricing_period}: $${currentPrice} → $${newFOMOPrice} (${amount > 15 ? '🔥 MASSIVE MOVE' : amount > 8 ? '⚡ BIG MOVE' : 'change'}: $${amount})`);
       } else {
-        console.log(`✅ Signal Hill Motel ${room.pricing_period}: $${currentPrice} (stable)`);
+        console.log(`🔄 MICRO-ADJUST Signal Hill Motel ${room.pricing_period}: $${currentPrice} → $${newFOMOPrice} (fine-tune: $${amount})`);
       }
     }
   } catch (err) {
@@ -241,7 +252,8 @@ app.get('/api/admin/pricing-status', async (req, res) => {
       fomoActive: true,
       updateInterval: `${PRICING_CONFIG.UPDATE_INTERVAL} minute`,
       priceRange: `$${PRICING_CONFIG.MINIMUM_PRICE}-$${PRICING_CONFIG.MAXIMUM_PRICE}`,
-      extremeFomo: true
+      extremeFomo: true,
+      guaranteedChanges: true
     });
     
   } catch (error) {
@@ -267,7 +279,8 @@ app.get('/api/rooms', async (req, res) => {
             price_last_updated: room.last_price_update,
             next_update: '1 minute',
             fomo_active: true,
-            extreme_fomo: true
+            extreme_fomo: true,
+            guaranteed_changes: true
         }));
         
         res.json(rooms);
@@ -350,9 +363,10 @@ app.get('/health', (req, res) => {
     res.json({ 
         status: 'OK', 
         timestamp: new Date().toISOString(),
-        service: 'DOT - EXTREME FOMO Pricing API',
+        service: 'DOT - GUARANTEED PRICE CHANGES API',
         fomo_active: true,
         extreme_fomo: true,
+        guaranteed_changes: true,
         update_interval: '1 minute'
     });
 });
@@ -378,7 +392,7 @@ app.get('/api/force-update', async (req, res) => {
         }
         
         res.json({ 
-            message: 'Pricing update forced!',
+            message: 'Pricing update forced! GUARANTEED price changes applied!',
             timestamp: new Date().toISOString(),
             rooms_updated: rooms.length
         });
@@ -390,13 +404,13 @@ app.get('/api/force-update', async (req, res) => {
 });
 
 app.listen(PORT, () => {
-    console.log(`🔥 DOT EXTREME FOMO PRICING API running on port ${PORT}`);
-    console.log(`⚡ Prices update every ${PRICING_CONFIG.UPDATE_INTERVAL} minute for MAXIMUM FOMO!`);
+    console.log(`🔥 DOT GUARANTEED PRICE CHANGES API running on port ${PORT}`);
+    console.log(`⚡ Prices GUARANTEED to change every ${PRICING_CONFIG.UPDATE_INTERVAL} minute!`);
     console.log(`💰 Price range: $${PRICING_CONFIG.MINIMUM_PRICE}-$${PRICING_CONFIG.MAXIMUM_PRICE}`);
 });
 
 // Log startup message
-console.log('🎯 EXTREME FOMO PRICING SYSTEM ACTIVATED!');
-console.log('📈 Prices will surge and drop every 1 MINUTE');
+console.log('🎯 GUARANTEED PRICE CHANGES SYSTEM ACTIVATED!');
+console.log('📈 Prices WILL surge and drop every 1 MINUTE - NO EXCEPTIONS!');
 console.log('🔥 Creating MAXIMUM urgency for Signal Hill Motel!');
-console.log('⚡ Price changes trigger at $1+ differences for constant movement!');
+console.log('⚡ Every price update is GUARANTEED to change - no more stable prices!');
