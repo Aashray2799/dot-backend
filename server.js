@@ -11,7 +11,7 @@ const PORT = process.env.PORT || 3000;
 
 // ADD EMAIL CONFIGURATION RIGHT HERE (AFTER IMPORTS)
 // Email configuration for Signal Hill Motel notifications
-const transporter = nodemailer.createTransporter({
+const transporter = nodemailer.createTransport({
   service: 'gmail',
   auth: {
     user: 'dotbookings2025@gmail.com',     // Create this Gmail account
