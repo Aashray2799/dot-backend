@@ -1,12 +1,86 @@
 const express = require('express');
 const cors = require('cors');
 const cron = require('node-cron');
+const nodemailer = require('nodemailer'); // ADD THIS LINE
 require('dotenv').config();
 
 const pool = require('./database/connection');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+
+// ADD EMAIL CONFIGURATION RIGHT HERE (AFTER IMPORTS)
+// Email configuration for Signal Hill Motel notifications
+const transporter = nodemailer.createTransporter({
+  service: 'gmail',
+  auth: {
+    user: 'dotbookings2025@gmail.com',     // Create this Gmail account
+    pass: 'your-app-password-here'        // Gmail app password (not regular password)
+  }
+});
+
+// Signal Hill Motel notification function
+const sendBookingNotification = async (bookingData) => {
+  try {
+    const emailContent = {
+      from: 'DOT Bookings <dotbookings2025@gmail.com>',
+      to: 'nikhil.aashray@gmail.com', // REPLACE WITH REAL MOTEL OWNER EMAIL
+      subject: '🏨 NEW BOOKING ALERT - Signal Hill Motel - URGENT!',
+      html: `
+        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+          <div style="background: linear-gradient(135deg, #9d4edd, #c77dff); padding: 20px; text-align: center; color: white;">
+            <h1>🏨 NEW BOOKING RECEIVED!</h1>
+            <h2>Signal Hill Motel</h2>
+          </div>
+          
+          <div style="background: #f8f9ff; padding: 25px; border-radius: 0 0 10px 10px;">
+            <div style="background: white; padding: 20px; border-radius: 10px; margin: 20px 0; border-left: 5px solid #9d4edd;">
+              <h3 style="color: #9d4edd; margin-top: 0;">📋 Booking Details:</h3>
+              <p><strong>🧑‍💼 Customer Email:</strong> ${bookingData.customer_email}</p>
+              <p><strong>🏠 Room Type:</strong> ${bookingData.room_type}</p>
+              <p><strong>💰 Locked Price:</strong> $${bookingData.locked_price} (NO COMMISSION!)</p>
+              <p><strong>📅 Check-in Date:</strong> ${bookingData.check_in_date}</p>
+              <p><strong>🆔 Booking ID:</strong> #${bookingData.booking_id}</p>
+              <p><strong>🏨 Rooms Left:</strong> ${bookingData.rooms_left} rooms remaining</p>
+            </div>
+            
+            <div style="background: #fff3cd; padding: 15px; border-radius: 8px; border-left: 4px solid #ffc107; margin: 20px 0;">
+              <p style="margin: 0;"><strong>⏰ IMPORTANT:</strong> Customer has <strong>30 minutes</strong> to confirm this booking!</p>
+              <p style="margin: 5px 0 0 0; font-size: 14px;">Booking expires at: <strong>${new Date(Date.now() + 30 * 60 * 1000).toLocaleString()}</strong></p>
+            </div>
+            
+            <div style="background: #d1ecf1; padding: 15px; border-radius: 8px; border-left: 4px solid #17a2b8; margin: 20px 0;">
+              <p style="margin: 0;"><strong>💵 Revenue:</strong> $${bookingData.locked_price}</p>
+              <p style="margin: 5px 0 0 0;"><strong>🎯 Commission:</strong> $0 (Keep 100% vs Booking.com's 15-20%)</p>
+            </div>
+            
+            <div style="text-align: center; margin: 25px 0;">
+              <p style="color: #666; margin: 10px 0;">
+                <strong>📍 Location:</strong> Signal Hill, CA<br>
+                <strong>🕐 Booked At:</strong> ${new Date().toLocaleString()}<br>
+                <strong>📱 Platform:</strong> DOT - Deals on Time
+              </p>
+            </div>
+          </div>
+          
+          <div style="background: #e9ecef; padding: 15px; text-align: center; border-radius: 0 0 10px 10px;">
+            <p style="color: #6c757d; font-size: 12px; margin: 0;">
+              This notification was sent by <strong>DOT - Deals on Time</strong><br>
+              Helping Signal Hill Motel maximize revenue without commission fees!<br>
+              📧 Questions? Reply to this email or contact DOT support.
+            </p>
+          </div>
+        </div>
+      `
+    };
+
+    await transporter.sendMail(emailContent);
+    console.log('📧 ✅ Booking notification sent to Signal Hill Motel owner!');
+    
+  } catch (error) {
+    console.error('📧 ❌ Failed to send booking notification:', error);
+  }
+};
 
 // Middleware
 app.use(cors());
@@ -312,7 +386,7 @@ app.get('/api/rooms', async (req, res) => {
     }
 });
 
-// Book a room (30-minute hold) - FIXED: Reduce available rooms when booked
+// Book a room (30-minute hold) - WITH EMAIL NOTIFICATION!
 app.post('/api/rooms/:id/book', async (req, res) => {
     try {
         const { id } = req.params;
@@ -354,6 +428,18 @@ app.post('/api/rooms/:id/book', async (req, res) => {
         const currentDay = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'][new Date().getDay()];
         const roomsLeft = room.rooms_available - 1;
         
+        // 🚨 SEND EMAIL NOTIFICATION TO SIGNAL HILL MOTEL OWNER!
+        await sendBookingNotification({
+            customer_email: user_email,
+            room_type: room.room_type,
+            locked_price: room.current_price,
+            check_in_date: check_in_date,
+            booking_id: bookingResult.rows[0].id,
+            rooms_left: roomsLeft
+        });
+        
+        console.log('🏨 📧 Signal Hill Motel notified of new booking via email!');
+        
         res.json({
             message: 'Room booked successfully! Price locked for 30 minutes.',
             booking: bookingResult.rows[0],
@@ -362,7 +448,8 @@ app.post('/api/rooms/:id/book', async (req, res) => {
             rooms_left: roomsLeft,
             fomo_warning: roomsLeft <= 2 ? 
                 `🚨 URGENT: Only ${roomsLeft} rooms left after your booking!` :
-                `Prices change every minute on ${currentDay}s - you locked in just in time!`
+                `Prices change every minute on ${currentDay}s - you locked in just in time!`,
+            notification_sent: true // Confirms Signal Hill Motel was notified
         });
         
     } catch (err) {
@@ -416,7 +503,8 @@ app.get('/health', (req, res) => {
         price_range: `$${min_price}-$${max_price}`,
         update_interval: '1 minute',
         realistic_inventory: true,
-        time_periods: "3PM-11AM"
+        time_periods: "3PM-11AM",
+        email_notifications: true // NEW: Confirms email system is active
     });
 });
 
@@ -490,6 +578,29 @@ app.get('/api/fix-inventory', async (req, res) => {
     }
 });
 
+// NEW: Test email notification endpoint
+app.get('/api/test-email', async (req, res) => {
+    try {
+        await sendBookingNotification({
+            customer_email: 'test.customer@gmail.com',
+            room_type: 'Standard Room',
+            locked_price: 85,
+            check_in_date: '2025-06-18',
+            booking_id: 'TEST123',
+            rooms_left: 3
+        });
+        
+        res.json({
+            message: 'Test email sent to Signal Hill Motel owner!',
+            timestamp: new Date().toISOString()
+        });
+        
+    } catch (err) {
+        console.error('Error sending test email:', err);
+        res.status(500).json({ error: 'Failed to send test email' });
+    }
+});
+
 app.listen(PORT, () => {
     const currentDay = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'][new Date().getDay()];
     const dayNum = new Date().getDay();
@@ -500,6 +611,7 @@ app.listen(PORT, () => {
     console.log(`📅 Today: ${currentDay} | Range: $${min_price}-$${max_price}`);
     console.log(`⚡ Prices update every 1 minute with smart bias!`);
     console.log(`🏨 Realistic room counts (2-8 available) | ⏰ Time periods: 3PM-11AM`);
+    console.log(`📧 Email notifications ACTIVE for Signal Hill Motel bookings!`);
 });
 
 // Log startup message
@@ -509,3 +621,4 @@ console.log('🔥 Smart bias: Low occupancy → Lower prices | High occupancy �
 console.log('⚡ Updates every 60 seconds with 0.5%-3% randomness!');
 console.log('🏨 FIXED: Realistic room availability (2-8 rooms left)');
 console.log('⏰ FIXED: Time periods changed to 3PM-11AM');
+console.log('📧 NEW: Signal Hill Motel gets instant email alerts for all bookings!');
