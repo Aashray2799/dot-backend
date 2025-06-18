@@ -14,8 +14,8 @@ const PORT = process.env.PORT || 3000;
 const transporter = nodemailer.createTransport({
   service: 'gmail',
   auth: {
-    user: 'dotbookings2025@gmail.com',     // Create this Gmail account
-    pass: 'your-app-password-here'        // Gmail app password (not regular password)
+    user: 'guestsignalhill@gmail.com',     // Create this Gmail account
+    pass: 'zjle xpws vatu qnzv'        // Gmail app password (not regular password)
   }
 });
 
